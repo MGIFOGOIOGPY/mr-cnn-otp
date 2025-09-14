@@ -83,11 +83,18 @@ def process_cards(process_id, file_content, bot_token, chat_id, end_time):
                         break
                         
                     start_num += 1
-                    n = P.split('|')[0]
-                    mm = P.split('|')[1]
-                    yy = P.split('|')[2][-2:]
-                    cvc = P.split('|')[3].replace('\n', '')
-                    P = P.replace('\n', '')
+                    P = P.strip()  # إزالة المسافات البيضاء والأسطر الجديدة
+                    if not P or '|' not in P:
+                        continue  # تخطي الأسطر الفارغة أو غير الصحيحة
+                    
+                    parts = P.split('|')
+                    if len(parts) < 4:
+                        continue  # تخطي الأسطر التي لا تحتوي على بيانات كافية
+                    
+                    n = parts[0]
+                    mm = parts[1]
+                    yy = parts[2][-2:] if len(parts[2]) >= 2 else parts[2]
+                    cvc = parts[3].replace('\n', '')
                     
                     # حساب الوقت المتبقي
                     time_left = end_time - datetime.now()
